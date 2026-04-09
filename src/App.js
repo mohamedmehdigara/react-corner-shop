@@ -1,227 +1,343 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import styled, { createGlobalStyle, keyframes, css } from 'styled-components';
 
-// --- State Management ---
-const useStore = create((set) => ({
-  cart: [],
-  isOrdering: false,
-  orderSuccess: false,
-  isDarkMode: false,
-  toggleDarkMode: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
-  addToCart: (product) => set((state) => {
-    const existing = state.cart.find((item) => item.id === product.id);
-    if (existing) {
-      return { cart: state.cart.map((item) => item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item) };
-    }
-    return { cart: [...state.cart, { ...product, quantity: 1 }] };
-  }),
-  removeFromCart: (id) => set((state) => ({ cart: state.cart.filter((item) => item.id !== id) })),
-  processOrder: async () => {
-    set({ isOrdering: true });
-    await new Promise(r => setTimeout(r, 1500));
-    set({ isOrdering: false, orderSuccess: true, cart: [] });
-    setTimeout(() => set({ orderSuccess: false }), 5000);
-  }
-}));
+// --- State Management with Persistence ---
+const useStore = create(
+  persist(
+    (set) => ({
+      cart: [],
+      isDarkMode: false,
+      lastOrder: null,
+      toggleDarkMode: () => set((state) => ({ isDarkMode: !state.isDarkMode })),
+      addToCart: (product) => set((state) => {
+        const existing = state.cart.find((item) => item.id === product.id);
+        if (existing) {
+          return { cart: state.cart.map((item) => 
+            item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item) };
+        }
+        return { cart: [...state.cart, { ...product, quantity: 1 }] };
+      }),
+      decrementItem: (id) => set((state) => ({
+        cart: state.cart.map(item => 
+          item.id === id ? { ...item, quantity: Math.max(1, item.quantity - 1) } : item)
+      })),
+      removeFromCart: (id) => set((state) => ({ cart: state.cart.filter((item) => item.id !== id) })),
+      clearCart: () => set({ cart: [] }),
+      setLastOrder: (order) => set({ lastOrder: order }),
+    }),
+    { name: 'hammas-storage' }
+  )
+);
 
-// --- Styles ---
+// --- Styles & Animations ---
 const GlobalStyle = createGlobalStyle`
   body {
     margin: 0; padding: 0;
-    transition: all 0.3s ease;
-    background-color: ${props => props.dark ? '#1a1a1a' : '#fdfaf6'};
-    color: ${props => props.dark ? '#fdfaf6' : '#3e2723'};
-    font-family: 'Inter', sans-serif;
+    transition: background 0.3s ease;
+    background-color: ${props => props.dark ? '#121212' : '#fcfaf7'};
+    color: ${props => props.dark ? '#f0f0f0' : '#2d1b15'};
+    font-family: 'Poppins', sans-serif;
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; scroll-behavior: smooth; }
 `;
 
-const scroll = keyframes`
-  0% { transform: translateX(100%); }
-  100% { transform: translateX(-100%); }
-`;
-
-const Ticker = styled.div`
-  background: #d35400; color: white; padding: 8px 0; overflow: hidden; white-space: nowrap;
-  div { display: inline-block; animation: ${scroll} 20s linear infinite; font-weight: bold; }
-`;
+const slideIn = keyframes`from { transform: translateX(100%); } to { transform: translateX(0); }`;
 
 const Nav = styled.nav`
-  background: #3e2723; color: white; padding: 1rem 5%; display: flex; 
-  justify-content: space-between; align-items: center; position: sticky; top: 0; z-index: 100;
+  background: #3e2723; color: white; padding: 1rem 5%;
+  display: flex; justify-content: space-between; align-items: center;
+  position: sticky; top: 0; z-index: 1000; box-shadow: 0 4px 10px rgba(0,0,0,0.3);
 `;
 
-const SearchInput = styled.input`
-  padding: 10px 15px; border-radius: 20px; border: none; width: 300px;
-  @media (max-width: 600px) { width: 150px; }
+const SearchBar = styled.input`
+  background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+  color: white; padding: 10px 20px; border-radius: 25px; width: 300px;
+  &::placeholder { color: #ccc; }
+  &:focus { outline: none; background: rgba(255,255,255,0.2); }
 `;
 
-const Grid = styled.div`
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px;
-  padding: 20px 0;
+const CategoryBar = styled.div`
+  display: flex; gap: 10px; overflow-x: auto; padding: 15px 5%;
+  background: ${props => props.dark ? '#1e1e1e' : '#fff'};
+  position: sticky; top: 60px; z-index: 900;
+  &::-webkit-scrollbar { display: none; }
+`;
+
+const Chip = styled.button`
+  background: ${props => props.active ? '#d35400' : 'transparent'};
+  color: ${props => props.active ? '#white' : (props.dark ? '#ccc' : '#3e2723')};
+  border: 1px solid #d35400; padding: 6px 18px; border-radius: 20px;
+  cursor: pointer; white-space: nowrap; font-weight: 600;
+  &:hover { background: #d35400; color: white; }
+`;
+
+const ProductGrid = styled.div`
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px;
 `;
 
 const ProductCard = styled.div`
-  background: ${props => props.dark ? '#2d2d2d' : 'white'};
-  border: 1px solid ${props => props.dark ? '#444' : '#efebe9'};
-  border-radius: 12px; padding: 15px; display: flex; flex-direction: column; justify-content: space-between;
-  &:hover { border-color: #d35400; }
+  background: ${props => props.dark ? '#252525' : 'white'};
+  border-radius: 16px; padding: 20px; border: 1px solid ${props => props.dark ? '#333' : '#eee'};
+  display: flex; flex-direction: column; transition: 0.3s;
+  &:hover { transform: translateY(-5px); border-color: #d35400; }
 `;
 
-const Layout = styled.div`
-  display: grid; grid-template-columns: 1fr 350px; gap: 30px; padding: 20px 5%;
-  @media (max-width: 1024px) { grid-template-columns: 1fr; }
+const Price = styled.span`
+  font-size: 1.2rem; font-weight: 800; color: #d35400;
 `;
 
-const Button = styled.button`
-  background: #d35400; color: white; border: none; padding: 10px; border-radius: 8px; cursor: pointer;
-  font-weight: bold; width: 100%; &:hover { background: #a04000; }
+const ActionButton = styled.button`
+  background: ${props => props.color || '#d35400'};
+  color: white; border: none; padding: 12px; border-radius: 8px;
+  font-weight: 700; cursor: pointer; transition: 0.2s;
+  &:hover { opacity: 0.9; transform: scale(1.02); }
+  &:disabled { background: #ccc; cursor: not-allowed; }
 `;
 
-// --- The Master List (60+ Items) ---
+const CartSidebar = styled.div`
+  background: ${props => props.dark ? '#1e1e1e' : 'white'};
+  padding: 25px; border-radius: 20px; border: 1px solid ${props => props.dark ? '#333' : '#eee'};
+  height: fit-content; position: sticky; top: 130px;
+`;
+
+const Toast = styled.div`
+  position: fixed; bottom: 20px; right: 20px; background: #27ae60;
+  color: white; padding: 15px 25px; border-radius: 10px;
+  animation: ${slideIn} 0.3s ease; z-index: 2000;
+`;
+
+// --- The Complete Inventory (80+ Items) ---
 const PRODUCTS = [
-  // SEEDS
-  { id: 1, name: 'White Gloub (Salted)', price: 4.5, cat: 'Seeds' },
-  { id: 2, name: 'Black Gloub (Large)', price: 2.8, cat: 'Seeds' },
-  { id: 3, name: 'Egyptian Gloub (Red)', price: 3.5, cat: 'Seeds' },
-  { id: 4, name: 'Pumpkin Seeds (Small)', price: 6.0, cat: 'Seeds' },
+  // SEEDS (The Legends)
+  { id: 1, name: 'Gloub Bidha (Salted)', price: 4.5, cat: 'Seeds' },
+  { id: 2, name: 'Gloub Kahla (Black)', price: 2.8, cat: 'Seeds' },
+  { id: 3, name: 'Egyptian Red Seeds', price: 3.5, cat: 'Seeds' },
+  { id: 4, name: 'Pumpkin Seeds (Qaraa)', price: 7.2, cat: 'Seeds' },
   { id: 5, name: 'Spiced Sunflower', price: 4.2, cat: 'Seeds' },
-  { id: 6, name: 'Watermelon Seeds', price: 5.0, cat: 'Seeds' },
+  { id: 6, name: 'Salted Watermelon Seeds', price: 5.0, cat: 'Seeds' },
+  { id: 7, name: 'Gloub Bidha (No Salt)', price: 4.5, cat: 'Seeds' },
+  
   // NUTS
-  { id: 7, name: 'Pistachios (Salted)', price: 26.0, cat: 'Nuts' },
-  { id: 8, name: 'Almonds (Smoked)', price: 19.5, cat: 'Nuts' },
-  { id: 9, name: 'Hazelnuts (Roasted)', price: 17.0, cat: 'Nuts' },
-  { id: 10, name: 'Cashews (Chilli)', price: 23.0, cat: 'Nuts' },
-  { id: 11, name: 'Walnuts (Half)', price: 15.0, cat: 'Nuts' },
-  { id: 12, name: 'Peanuts (In Shell)', price: 5.0, cat: 'Nuts' },
-  { id: 13, name: 'Peanuts (Red Skin)', price: 5.5, cat: 'Nuts' },
-  { id: 14, name: 'Pecans', price: 28.0, cat: 'Nuts' },
-  { id: 15, name: 'Macadamias', price: 35.0, cat: 'Nuts' },
-  // SNACKS & LEGUMES
-  { id: 16, name: 'Chickpeas (Hommos)', price: 3.5, cat: 'Snacks' },
-  { id: 17, name: 'Spicy Chickpeas', price: 4.0, cat: 'Snacks' },
-  { id: 18, name: 'Sugared Chickpeas', price: 4.5, cat: 'Snacks' },
-  { id: 19, name: 'Corn Crunch (Salty)', price: 3.8, cat: 'Snacks' },
-  { id: 20, name: 'Lupin (Tirmis)', price: 4.0, cat: 'Snacks' },
-  { id: 21, name: 'Rice Cracker Mix', price: 7.0, cat: 'Snacks' },
-  { id: 22, name: 'Fava Beans', price: 3.5, cat: 'Snacks' },
-  // FRUITS
-  { id: 23, name: 'Deglet Nour Dates', price: 10.0, cat: 'Fruits' },
-  { id: 24, name: 'Dried Figs', price: 12.0, cat: 'Fruits' },
-  { id: 25, name: 'Dried Apricots', price: 14.0, cat: 'Fruits' },
-  { id: 26, name: 'Golden Raisins', price: 8.5, cat: 'Fruits' },
-  { id: 27, name: 'Dried Pineapple', price: 16.0, cat: 'Fruits' },
-  { id: 28, name: 'Dried Mango', price: 18.0, cat: 'Fruits' },
-  // SWEETS
-  { id: 29, name: 'Halwa Plain', price: 6.5, cat: 'Sweets' },
-  { id: 30, name: 'Halwa Pistachio', price: 9.5, cat: 'Sweets' },
-  { id: 31, name: 'Gummy Bears', price: 3.0, cat: 'Sweets' },
-  { id: 32, name: 'Nougat Almond', price: 12.0, cat: 'Sweets' },
-  { id: 33, name: 'Sesame Snaps', price: 2.5, cat: 'Sweets' },
-  { id: 34, name: 'Chocolate Peanuts', price: 7.0, cat: 'Sweets' },
-  { id: 35, name: 'Fruit Lollipops', price: 0.5, cat: 'Sweets' },
-  { id: 36, name: 'Turkish Delight', price: 11.0, cat: 'Sweets' },
-  // BISCUITS
-  { id: 37, name: 'Saida Classic', price: 1.2, cat: 'Biscuits' },
-  { id: 38, name: 'Prince Chocolate', price: 2.5, cat: 'Biscuits' },
-  { id: 39, name: 'Major Strawberry', price: 1.5, cat: 'Biscuits' },
-  { id: 40, name: 'Galette Biscuits', price: 2.0, cat: 'Biscuits' },
-  { id: 41, name: 'Wafers (Vanilla)', price: 1.8, cat: 'Biscuits' },
-  // DRINKS
-  { id: 42, name: 'Selecto (1.5L)', price: 2.5, cat: 'Drinks' },
-  { id: 43, name: 'Boga White', price: 2.2, cat: 'Drinks' },
-  { id: 44, name: 'Boga Cidre', price: 2.2, cat: 'Drinks' },
-  { id: 45, name: 'Apla Juice', price: 2.8, cat: 'Drinks' },
-  { id: 46, name: 'Safia Water', price: 0.8, cat: 'Drinks' },
-  { id: 47, name: 'Cold Milk (Bottle)', price: 1.6, cat: 'Drinks' },
-  { id: 48, name: 'Viva Energy Drink', price: 3.0, cat: 'Drinks' },
-  // PANTRY / ESSENTIALS
-  { id: 49, name: 'Canned Harissa', price: 1.5, cat: 'Pantry' },
-  { id: 50, name: 'Tomato Paste', price: 1.2, cat: 'Pantry' },
-  { id: 51, name: 'Couscous (1kg)', price: 2.0, cat: 'Pantry' },
-  { id: 52, name: 'Spaghetti n°2', price: 1.1, cat: 'Pantry' },
-  { id: 53, name: 'Vegetable Oil', price: 4.5, cat: 'Pantry' },
-  { id: 54, name: 'Salt (Table)', price: 0.5, cat: 'Pantry' },
-  { id: 55, name: 'Sugar (1kg)', price: 1.8, cat: 'Pantry' },
-  // MISC
-  { id: 56, name: 'Pocket Tissues', price: 0.5, cat: 'Misc' },
-  { id: 57, name: 'Matches', price: 0.3, cat: 'Misc' },
-  { id: 58, name: 'Disposable Lighter', price: 1.0, cat: 'Misc' },
-  { id: 59, name: 'Soap Bar', price: 1.5, cat: 'Misc' },
-  { id: 60, name: 'Phone Card (5DT)', price: 5.4, cat: 'Misc' }
+  { id: 8, name: 'Pistachios (Roasted)', price: 26.0, cat: 'Nuts' },
+  { id: 9, name: 'Almonds (Smoked)', price: 19.5, cat: 'Nuts' },
+  { id: 10, name: 'Hazelnuts (Bofriwa)', price: 17.5, cat: 'Nuts' },
+  { id: 11, name: 'Cashews (Salty)', price: 24.0, cat: 'Nuts' },
+  { id: 12, name: 'Walnuts (Shelled)', price: 16.0, cat: 'Nuts' },
+  { id: 13, name: 'Peanuts (Kakawia)', price: 5.5, cat: 'Nuts' },
+  { id: 14, name: 'Honey Glazed Almonds', price: 21.0, cat: 'Nuts' },
+  { id: 15, name: 'Macadamias', price: 38.0, cat: 'Nuts' },
+  { id: 16, name: 'Pecans', price: 30.0, cat: 'Nuts' },
+  { id: 17, name: 'Mixed Deluxe Nuts', price: 22.0, cat: 'Nuts' },
+
+  // LEGUMES & CRUNCH
+  { id: 18, name: 'Roasted Hommos', price: 3.5, cat: 'Snacks' },
+  { id: 19, name: 'Mlabbes (Sugared Hommos)', price: 4.5, cat: 'Snacks' },
+  { id: 20, name: 'Corn Nuts (Chili)', price: 4.0, cat: 'Snacks' },
+  { id: 21, name: 'Tirmis (Lupin)', price: 4.2, cat: 'Snacks' },
+  { id: 22, name: 'Fava Beans (Roasted)', price: 3.8, cat: 'Snacks' },
+  { id: 23, name: 'Rice Crackers Mix', price: 7.5, cat: 'Snacks' },
+
+  // TRADITIONAL SWEETS
+  { id: 24, name: 'Halwa Chamia (Plain)', price: 6.5, cat: 'Sweets' },
+  { id: 25, name: 'Halwa Chamia (Pistachio)', price: 10.5, cat: 'Sweets' },
+  { id: 26, name: 'Traditional Nougat', price: 12.0, cat: 'Sweets' },
+  { id: 27, name: 'Sesame Snaps', price: 2.5, cat: 'Sweets' },
+  { id: 28, name: 'Gummy Bears (Briket)', price: 3.5, cat: 'Sweets' },
+  { id: 29, name: 'Chocolate Toffee', price: 0.5, cat: 'Sweets' },
+  { id: 30, name: 'Zgougou Paste (Seasonal)', price: 45.0, cat: 'Sweets' },
+
+  // DRINKS (Gazouza)
+  { id: 31, name: 'Selecto (1.5L)', price: 2.6, cat: 'Drinks' },
+  { id: 32, name: 'Boga White (1.5L)', price: 2.3, cat: 'Drinks' },
+  { id: 33, name: 'Boga Cidre', price: 2.3, cat: 'Drinks' },
+  { id: 34, name: 'Coca Cola (Glass)', price: 1.8, cat: 'Drinks' },
+  { id: 35, name: 'Apla Apple Juice', price: 3.0, cat: 'Drinks' },
+  { id: 36, name: 'Safia Water (1.5L)', price: 0.9, cat: 'Drinks' },
+  { id: 37, name: 'Sabrine Water (0.5L)', price: 0.6, cat: 'Drinks' },
+  { id: 38, name: 'Viva Energy', price: 3.2, cat: 'Drinks' },
+
+  // PANTRY & EMERGENCY
+  { id: 39, name: 'Harissa Diari (Small)', price: 2.5, cat: 'Pantry' },
+  { id: 40, name: 'Canned Tomato Paste', price: 1.4, cat: 'Pantry' },
+  { id: 41, name: 'Couscous Fine (1kg)', price: 2.2, cat: 'Pantry' },
+  { id: 42, name: 'Pasta n°2 (Makrouna)', price: 1.2, cat: 'Pantry' },
+  { id: 43, name: 'Vegetable Oil (1L)', price: 5.0, cat: 'Pantry' },
+  { id: 44, name: 'Table Salt', price: 0.5, cat: 'Pantry' },
+  { id: 45, name: 'Refined Sugar (1kg)', price: 2.0, cat: 'Pantry' },
+  { id: 46, name: 'Green Tea (Box)', price: 3.5, cat: 'Pantry' },
+  { id: 47, name: 'Coffee Powder (100g)', price: 4.8, cat: 'Pantry' },
+
+  // HOUSEHOLD & MISC
+  { id: 48, name: 'Pocket Tissues', price: 0.5, cat: 'Misc' },
+  { id: 49, name: 'Disposable Lighter', price: 1.2, cat: 'Misc' },
+  { id: 50, name: 'Box of Matches', price: 0.3, cat: 'Misc' },
+  { id: 51, name: 'Soap (Saboun Lakhdar)', price: 1.8, cat: 'Misc' },
+  { id: 52, name: 'Ooredoo 5DT Recharge', price: 5.4, cat: 'Misc' },
+  { id: 53, name: 'Telecom 10DT Recharge', price: 10.8, cat: 'Misc' },
+  { id: 54, name: 'Plastic Plates (Set)', price: 4.5, cat: 'Misc' },
+  { id: 55, name: 'Cleaning Sponge', price: 1.0, cat: 'Misc' },
+  { id: 56, name: 'Emergency Candles', price: 2.0, cat: 'Misc' }
 ];
 
 export default function App() {
-  const { cart, addToCart, removeFromCart, isOrdering, orderSuccess, processOrder, isDarkMode, toggleDarkMode } = useStore();
+  const store = useStore();
   const [search, setSearch] = useState('');
+  const [activeCat, setActiveCat] = useState('All');
+  const [showToast, setShowToast] = useState(false);
+  const [isOrdering, setIsOrdering] = useState(false);
 
-  const filteredItems = useMemo(() => 
-    PRODUCTS.filter(p => p.name.toLowerCase().includes(search.toLowerCase())), [search]);
+  // Shop Status Logic
+  const currentHour = new Date().getHours();
+  const isOpen = currentHour >= 8 || currentHour <= 3;
 
-  const total = cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
+  const categories = ['All', 'Seeds', 'Nuts', 'Snacks', 'Sweets', 'Drinks', 'Pantry', 'Misc'];
+
+  const filteredItems = useMemo(() => {
+    return PRODUCTS.filter(p => 
+      (activeCat === 'All' || p.cat === activeCat) &&
+      p.name.toLowerCase().includes(search.toLowerCase())
+    );
+  }, [search, activeCat]);
+
+  const total = store.cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
+
+  const handleAdd = (p) => {
+    store.addToCart(p);
+    setShowToast(true);
+    setTimeout(() => setShowToast(false), 2000);
+  };
+
+  const handleCheckout = async () => {
+    setIsOrdering(true);
+    await new Promise(r => setTimeout(r, 2000)); // Simulate API
+    store.setLastOrder(store.cart);
+    store.clearCart();
+    setIsOrdering(false);
+    alert("Order Successful! Your items are reserved at the counter. 🏮");
+  };
 
   return (
     <>
-      <GlobalStyle dark={isDarkMode} />
-      <Ticker>
-        <div>🔥 FRESH BATCH: Salted Almonds just out of the roaster! • 🌙 OPEN LATE: We close at 3:00 AM tonight • 🥜 NEW: Spiced Pumpkin Seeds available now!</div>
-      </Ticker>
+      <GlobalStyle dark={store.isDarkMode} />
+      
       <Nav>
-        <h2 style={{margin: 0}}>EL HAMMAS 🏮</h2>
-        <div style={{display: 'flex', gap: '15px', alignItems: 'center'}}>
-          <SearchInput placeholder="Search gloub, nuts, drinks..." onChange={(e) => setSearch(e.target.value)} />
-          <button onClick={toggleDarkMode} style={{background: 'none', border: 'none', color: 'white', cursor: 'pointer', fontSize: '1.2rem'}}>
-            {isDarkMode ? '☀️' : '🌙'}
+        <div style={{display:'flex', alignItems:'center', gap:'15px'}}>
+          <h1 style={{fontSize:'1.5rem', margin:0}}>HAMMAS PRO 🏮</h1>
+          <span style={{fontSize:'0.8rem', padding:'4px 10px', borderRadius:'10px', background: isOpen ? '#27ae60' : '#c0392b'}}>
+            {isOpen ? 'OPEN UNTIL 3 AM' : 'CLOSED'}
+          </span>
+        </div>
+        <div style={{display:'flex', gap:'20px', alignItems:'center'}}>
+          <SearchBar 
+            placeholder="Search nuts, seeds, drinks..." 
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <button onClick={store.toggleDarkMode} style={{background:'none', border:'none', fontSize:'1.5rem', cursor:'pointer'}}>
+            {store.isDarkMode ? '☀️' : '🌙'}
           </button>
         </div>
       </Nav>
 
-      <Layout>
-        <main>
-          {['Seeds', 'Nuts', 'Snacks', 'Fruits', 'Sweets', 'Biscuits', 'Drinks', 'Pantry', 'Misc'].map(cat => {
-            const catItems = filteredItems.filter(p => p.cat === cat);
-            if (catItems.length === 0) return null;
-            return (
-              <div key={cat}>
-                <h3 style={{borderLeft: '4px solid #d35400', paddingLeft: '10px', marginTop: '30px'}}>{cat}</h3>
-                <Grid>
-                  {catItems.map(p => (
-                    <ProductCard key={p.id} dark={isDarkMode}>
-                      <div>
-                        <h4 style={{margin: '0 0 5px 0'}}>{p.name}</h4>
-                        <p style={{fontWeight: 'bold', color: '#d35400'}}>{p.price.toFixed(3)} TND</p>
-                      </div>
-                      <Button onClick={() => addToCart(p)}>+ Add</Button>
-                    </ProductCard>
-                  ))}
-                </Grid>
-              </div>
-            );
-          })}
-        </main>
+      <CategoryBar dark={store.isDarkMode}>
+        {categories.map(cat => (
+          <Chip 
+            key={cat} 
+            active={activeCat === cat} 
+            dark={store.isDarkMode}
+            onClick={() => setActiveCat(cat)}
+          >
+            {cat}
+          </Chip>
+        ))}
+      </CategoryBar>
 
-        <aside>
-          <div style={{background: isDarkMode ? '#2d2d2d' : 'white', padding: '20px', borderRadius: '15px', position: 'sticky', top: '100px', border: '1px solid #efebe9'}}>
-            <h3>Your Bag</h3>
-            {orderSuccess && <p style={{color: 'green', textAlign: 'center'}}>✅ Order Successful!</p>}
-            {cart.map(item => (
-              <div key={item.id} style={{display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontSize: '0.9rem'}}>
-                <span>{item.name} x{item.quantity}</span>
-                <button onClick={() => removeFromCart(item.id)} style={{background: 'none', border: 'none', color: 'red', cursor: 'pointer'}}>×</button>
-              </div>
-            ))}
-            <hr />
-            <div style={{display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '1.2rem'}}>
-              <span>Total:</span>
-              <span>{total.toFixed(3)} TND</span>
-            </div>
-            <Button disabled={isOrdering || cart.length === 0} onClick={processOrder} style={{marginTop: '15px', background: '#27ae60'}}>
-              {isOrdering ? 'PROCESSING...' : 'ORDER FOR PICKUP'}
-            </Button>
-          </div>
-        </aside>
-      </Layout>
+      <div style={{padding: '0 5% 50px 5%', maxWidth: '1600px', margin: 'auto'}}>
+        <div style={{display:'grid', gridTemplateColumns:'1fr 380px', gap:'40px', marginTop:'30px'}}>
+          
+          <main>
+            <h2 style={{marginBottom:'25px'}}>{activeCat} Selection</h2>
+            <ProductGrid>
+              {filteredItems.map(p => (
+                <ProductCard key={p.id} dark={store.isDarkMode}>
+                  <div>
+                    <small style={{color:'#d35400', fontWeight:'bold'}}>{p.cat}</small>
+                    <h4 style={{margin:'5px 0 15px 0', minHeight:'40px'}}>{p.name}</h4>
+                  </div>
+                  <div style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                    <Price>{p.price.toFixed(3)}</Price>
+                    <ActionButton onClick={() => handleAdd(p)} style={{padding:'8px 15px', fontSize:'0.8rem'}}>
+                      + ADD
+                    </ActionButton>
+                  </div>
+                </ProductCard>
+              ))}
+            </ProductGrid>
+          </main>
+
+          <aside>
+            <CartSidebar dark={store.isDarkMode}>
+              <h3 style={{marginTop:0, borderBottom:'1px solid #ddd', paddingBottom:'15px'}}>Your Qortas</h3>
+              {store.cart.length === 0 ? (
+                <div style={{textAlign:'center', padding:'40px 0', color:'#888'}}>
+                  <p>Your bag is empty. Start adding some gloub!</p>
+                </div>
+              ) : (
+                <>
+                  <div style={{maxHeight:'400px', overflowY:'auto'}}>
+                    {store.cart.map(item => (
+                      <div key={item.id} style={{display:'flex', justifyContent:'space-between', padding:'15px 0', borderBottom:'1px solid #eee'}}>
+                        <div style={{flex:1}}>
+                          <div style={{fontWeight:'bold', fontSize:'0.9rem'}}>{item.name}</div>
+                          <div style={{display:'flex', alignItems:'center', gap:'10px', marginTop:'5px'}}>
+                            <button onClick={() => store.decrementItem(item.id)} style={{border:'1px solid #ccc', borderRadius:'4px', padding:'2px 8px'}}>-</button>
+                            <span>{item.quantity}</span>
+                            <button onClick={() => store.addToCart(item)} style={{border:'1px solid #ccc', borderRadius:'4px', padding:'2px 8px'}}>+</button>
+                          </div>
+                        </div>
+                        <div style={{textAlign:'right'}}>
+                          <div style={{fontWeight:'800'}}>{(item.price * item.quantity).toFixed(3)}</div>
+                          <button onClick={() => store.removeFromCart(item.id)} style={{color:'red', border:'none', background:'none', fontSize:'0.7rem', cursor:'pointer'}}>REMOVE</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div style={{marginTop:'25px', padding:'20px', background: store.isDarkMode ? '#333' : '#f9f9f9', borderRadius:'12px'}}>
+                    <div style={{display:'flex', justifyContent:'space-between', marginBottom:'10px'}}>
+                      <span>Subtotal</span>
+                      <strong>{total.toFixed(3)} TND</strong>
+                    </div>
+                    <div style={{display:'flex', justifyContent:'space-between', marginBottom:'20px', fontSize:'0.8rem', color:'#d35400'}}>
+                      <span>Est. Prep Time</span>
+                      <span>~5-10 Mins</span>
+                    </div>
+                    <ActionButton 
+                      disabled={isOrdering} 
+                      onClick={handleCheckout} 
+                      color="#27ae60" 
+                      style={{width:'100%'}}
+                    >
+                      {isOrdering ? 'PREPARING...' : 'CONFIRM ORDER'}
+                    </ActionButton>
+                    <button onClick={store.clearCart} style={{width:'100%', background:'none', border:'none', marginTop:'15px', color:'#888', cursor:'pointer', fontSize:'0.8rem'}}>
+                      Clear Bag
+                    </button>
+                  </div>
+                </>
+              )}
+            </CartSidebar>
+          </aside>
+        </div>
+      </div>
+
+      {showToast && <Toast>Added to Qortas! 🥜</Toast>}
+
+      <footer style={{textAlign:'center', padding:'50px', background:'#3e2723', color:'#8d6e63', marginTop:'100px'}}>
+        <p>© 2026 El Hammas Pro - 100% Traditional, 100% Tobacco-Free.</p>
+        <p style={{fontSize:'0.8rem', opacity:0.6}}>Tunis, Tunisia • Real-time Roasting</p>
+      </footer>
     </>
   );
 }
